@@ -1,81 +1,115 @@
 import os
 import logging
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes
+from Crypto.Cipher import DES
+import base64
+import sqlite3
 
-# Bot Token (Render par environment variable set karenge)
-BOT_TOKEN = os.environ.get('8040780554:AAGeKP-K5-_jD0HNpNwOhv770u_tdFbBovs')
+# ==================== CONFIGURATION ====================
+BOT_TOKEN = os.environ.get('8345588914:AAGsPHUAU2vU-_UqkvlUpttGfIrPS_kws6g')  # Render par set karenge
+ADMIN_ID = int(os.environ.get('7025016111'))  # Aapka User ID
+ENCRYPTION_KEY = os.environ.get('ENCRYPTION_KEY', 'Farhan12')  # Aapki secret key
 
-# Enable logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
+# ==================== ENCRYPTION ====================
+def generate_activation_key(user_id):
+    cipher = DES.new(ENCRYPTION_KEY.encode(), DES.MODE_ECB)
+    padded_id = str(user_id).ljust(8)
+    encrypted = cipher.encrypt(padded_id.encode())
+    return base64.b64encode(encrypted).decode()
 
-# /start command
+def verify_activation_key(key, user_id):
+    try:
+        cipher = DES.new(ENCRYPTION_KEY.encode(), DES.MODE_ECB)
+        decoded = base64.b64decode(key)
+        decrypted = cipher.decrypt(decoded).decode().strip()
+        return decrypted == str(user_id)
+    except:
+        return False
+
+# ==================== DATABASE ====================
+def init_db():
+    conn = sqlite3.connect('bot_users.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            activated INTEGER DEFAULT 0,
+            activation_key TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+# ==================== COMMANDS ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Namaste! 👋 Main VCF Bot hoon.\n"
-        "Mujhe kisi ka naam, phone number, email, aur anya details bhejiye, main aapko VCF file bana kar dunga.\n\n"
-        "Example:\n"
-        "Name: Raj Sharma\n"
-        "Phone: +919876543210\n"
-        "Email: raj@example.com"
-    )
+    user_id = update.effective_user.id
+    init_db()
+    
+    conn = sqlite3.connect('bot_users.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT activated FROM users WHERE user_id = ?', (user_id,))
+    user = cursor.fetchone()
+    
+    if user and user[0] == 1:
+        await update.message.reply_text('✅ Bot activated! Welcome! Use /vcf to create a VCF card.')
+    else:
+        activation_key = generate_activation_key(user_id)
+        cursor.execute('INSERT OR REPLACE INTO users (user_id, activated, activation_key) VALUES (?, ?, ?)',
+                      (user_id, 0, activation_key))
+        conn.commit()
+        await update.message.reply_text(
+            f'🔒 Bot not activated. Please send this ID to admin: `{user_id}`\n'
+            f'Then use /activate YOUR_KEY to activate'
+        )
+    conn.close()
 
-# VCF generate karne wala function
-def generate_vcf(name, phone, email=None, org=None):
-    vcf_content = f"""BEGIN:VCARD
-VERSION:3.0
-FN:{name}
-TEL;TYPE=CELL:{phone}
-"""
-    if email:
-        vcf_content += f"EMAIL:{email}\n"
-    if org:
-        vcf_content += f"ORG:{org}\n"
-    vcf_content += "END:VCARD"
-    return vcf_content
-
-# Message handle karein
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    lines = user_text.split('\n')
-    data = {}
-    
-    for line in lines:
-        if ':' in line:
-            key, value = line.split(':', 1)
-            data[key.strip().lower()] = value.strip()
-    
-    name = data.get('name', 'Unknown')
-    phone = data.get('phone', '')
-    email = data.get('email', '')
-    org = data.get('org', '')
-    
-    if not phone:
-        await update.message.reply_text("Phone number diye bina VCF nahi bana sakta. Kripya phone number provide karein.")
+async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text('❌ Please provide activation key: /activate YOUR_KEY')
         return
+        
+    user_id = update.effective_user.id
+    user_key = context.args[0]
     
-    vcf_data = generate_vcf(name, phone, email, org)
+    conn = sqlite3.connect('bot_users.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT activation_key FROM users WHERE user_id = ?', (user_id,))
+    user = cursor.fetchone()
     
-    # VCF file save karein temporarily
-    filename = f"{name.replace(' ', '_')}.vcf"
-    with open(filename, 'w') as f:
-        f.write(vcf_data)
-    
-    # File send karein
-    with open(filename, 'rb') as f:
-        await update.message.reply_document(document=f, caption="Yeh lo aapki VCF file! 📇")
-    
-    # Temporary file delete karein
-    os.remove(filename)
+    if user and verify_activation_key(user_key, user_id):
+        cursor.execute('UPDATE users SET activated = 1 WHERE user_id = ?', (user_id,))
+        conn.commit()
+        await update.message.reply_text('✅ Bot activated successfully! Now use /vcf')
+    else:
+        await update.message.reply_text('❌ Invalid activation key. Contact admin.')
+    conn.close()
 
+async def vcf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    conn = sqlite3.connect('bot_users.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT activated FROM users WHERE user_id = ?', (user_id,))
+    user = cursor.fetchone()
+    conn.close()
+    
+    if user and user[0] == 1:
+        # Yahan aap VCF banane ka code add kar sakte hain
+        vcf_data = "BEGIN:VCARD\nVERSION:3.0\nFN:Farhan\nTEL:+911234567890\nEND:VCARD"
+        await update.message.reply_text("✅ Here is your VCF card:")
+        await update.message.reply_document(document=open('example.vcf', 'wb'), filename='contact.vcf')
+    else:
+        await update.message.reply_text("❌ Bot not activated. Use /start first.")
+
+# ==================== MAIN ====================
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
-    
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(CommandHandler("activate", activate))
+    application.add_handler(CommandHandler("vcf", vcf))
     
+    print("Bot started...")
     application.run_polling()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
